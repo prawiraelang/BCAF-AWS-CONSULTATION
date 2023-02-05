@@ -1,3 +1,4 @@
+# Evaluate for Training Pipeline
 import json
 import logging
 import pathlib
@@ -38,12 +39,12 @@ if __name__ == "__main__":
     predictions = model.predict(X_test)
 
     logger.info("Calculating evaluation metrics...")
-    mse = mean_squared_error(y_test, predictions, squared=False)
+    rmse = mean_squared_error(y_test, predictions, squared=False)
     std = np.std(y_test - predictions)
     report_dict = {
         "regression_metrics": {
             "mse": {
-                "value": mse,
+                "value": rmse,
                 "standard_deviation": std
             },
         },
@@ -52,7 +53,7 @@ if __name__ == "__main__":
     output_dir = "/opt/ml/processing/evaluation"
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    logger.info("Writing out evaluation report with rmse <%f>...", mse)
+    logger.info("Writing out evaluation report with rmse <%f>...", rmse)
     evaluation_path = f"{output_dir}/evaluation.json"
     with open(evaluation_path, "w") as f:
         f.write(json.dumps(report_dict))

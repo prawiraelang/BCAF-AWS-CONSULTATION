@@ -1,4 +1,6 @@
+# Pipeline for Batch Transform Pipeline
 import os
+
 import boto3
 import sagemaker
 import sagemaker.session
@@ -11,14 +13,14 @@ from sagemaker.transformer import Transformer
 from sagemaker.processing import (
     ProcessingInput,
     ProcessingOutput,
-    ScriptProcessor,
+    ScriptProcessor
 )
 from sagemaker.sklearn.processing import SKLearnProcessor
 
 from sagemaker.workflow.parameters import (
     ParameterBoolean,
     ParameterInteger,
-    ParameterString,
+    ParameterString
 )
 from sagemaker.workflow.pipeline import Pipeline
 from sagemaker.workflow.properties import PropertyFile
@@ -66,7 +68,7 @@ def get_pipeline(
     default_bucket=None,
     model_package_group_name="UsedCarMLPackageGroup",
     pipeline_name="UsedCarMLPipeline",
-    base_job_prefix="UsedCarML",
+    base_job_prefix="UsedCarMLPrediction",
     processing_instance_type="ml.m5.xlarge",
     processing_instance_count=1,
     training_instance_type="ml.m5.xlarge",
@@ -76,7 +78,7 @@ def get_pipeline(
     sagemaker_session = get_session(region, default_bucket)
    
     if default_bucket is None:
-        default_bucket = "glair-exploration-sagemaker-bucket"
+        default_bucket = "sample-bucket-11" # Gunakan bucket yang ada di Singapore
     if role is None:
         role = sagemaker.session.get_execution_role(sagemaker_session)
 
@@ -89,13 +91,14 @@ def get_pipeline(
     training_instance_count = ParameterInteger(name="TrainingInstanceCount", default_value=1)
     transform_instances_type = ParameterString(name="TransformInstanceType", default_value="ml.m5.large")
     
+     # Ganti path sesuai lokasi file di direktori S3 dan pastikan file sudah memiliki format CSV
     input_data_lelang = ParameterString(
         name="InputDataLelangURI",
-        default_value=f"s3://glair-exploration-sagemaker-bucket/glair-bcaf-consultation/training/raw/used-car-price-prediction-cleaned.csv",
+        default_value=f"s3://bcafbucket/training/raw/lelang/used-car-price-prediction-cleaned.csv",
     )
     input_data_crawling = ParameterString(
         name="InputDataCrawlingURI",
-        default_value=f"s3://glair-exploration-sagemaker-bucket/glair-bcaf-consultation/training/raw/used-car-price-prediction-cleaned.csv",
+        default_value=f"s3://bcafbucket/training/raw/crawling/used-car-price-prediction-cleaned.csv",
     )
 
     # Processing step
@@ -124,10 +127,9 @@ def get_pipeline(
         step_args=step_args,        
     )
 
-    model_path = f"s3://{default_bucket}/glair-bcaf-consultation/model"
     unique_key = strftime("%Y%m%d-%H:%M:%S", gmtime())
-    model_name = f"xgboost-bcaf-model{unique_key}"
-    training_job_name = f"xgboost-training-job{unique_key}"
+    model_name = f"xgboost-model{unique_key}"
+    transform_job_name = f"xgboost-transform-job{unique_key}"
     
     image_uri = sagemaker.image_uris.retrieve(
         framework="xgboost",
@@ -137,43 +139,10 @@ def get_pipeline(
         instance_type=training_instance_type,
     )
 
-    xgb = Estimator(
-        image_uri=image_uri,
-        instance_type=training_instance_type,
-        instance_count=training_instance_count,
-        output_path=model_path,
-        sagemaker_session=pipeline_session,
-        role=role,
-        base_job_name="xgboost-training-job-sample"
-    )
-
-    xgb.set_hyperparameters(
-        objective="reg:squarederror",
-        num_round=10,
-        max_depth=6,
-        eta=0.3,
-        gamma=4,
-        min_child_weight=6,
-        subsample=0.9
-    )
-
-    step_args = xgb.fit(
-        inputs={
-            "train": TrainingInput(
-                s3_data=step_process.properties.ProcessingOutputConfig.Outputs["train"].S3Output.S3Uri, content_type="text/csv"),
-            "validation": TrainingInput(
-                s3_data=step_process.properties.ProcessingOutputConfig.Outputs["validation"].S3Output.S3Uri, content_type="text/csv",),
-        },
-    )
-
-    step_train = TrainingStep(
-        name="TrainUsedCarMLModel",
-        step_args=step_args
-    )
-
+    # Ganti model_data sesuai path menuju file .tar.gz di direktori s3
     model = Model(
         image_uri=image_uri,
-        model_data=step_train.properties.ModelArtifacts.S3ModelArtifacts,
+        model_data="s3://glair-exploration-sagemaker-bucket/glair-bcaf-consultation/model/pipelines-25kejldvtw4g-TrainUsedCarMLModel-TqbxH2HVo8/output/model.tar.gz",
         sagemaker_session=pipeline_session,
         role=role,
         name=model_name
@@ -181,70 +150,45 @@ def get_pipeline(
 
     step_args = model.create(
         instance_type="ml.m5.large",
-        accelerator_type="ml.eia1.medium"
+        accelerator_type="ml.eia1.medium",
     )
 
     step_create_model = ModelStep(
         name="UsedCarMLCreateModel",
         step_args=step_args,
     )
-    
-    script_eval = ScriptProcessor(
-        image_uri=image_uri,
-        command=["python3"],
-        instance_type=processing_instance_type,
-        instance_count=processing_instance_count,
-        base_job_name=f"{base_job_prefix}/Eval",
+
+    # Batch transform step
+    # Untuk output_path cobakan pakai yang di Jakarta dulu, jika error baru coba pindahkan ke Singapore
+    transformer = Transformer(
+        model_name=step_create_model.properties.ModelName,
+        instance_type="ml.m5.xlarge",
+        instance_count=1,
+        accept="text/csv",
+        assemble_with="Line",
+        output_path=f"s3://bcafbucket/output_batch/output",
         sagemaker_session=pipeline_session,
-        role=role,
-    )
-    
-    step_args = script_eval.run(
-        inputs=[
-            ProcessingInput(
-                source=step_train.properties.ModelArtifacts.S3ModelArtifacts, destination="/opt/ml/processing/model",
-            ),
-            ProcessingInput(
-                source=step_process.properties.ProcessingOutputConfig.Outputs["test"].S3Output.S3Uri,
-                destination="/opt/ml/processing/test",
-            ),
-        ],
-        outputs=[
-            ProcessingOutput(output_name="evaluation", source="/opt/ml/processing/evaluation"),
-        ],
-        code=os.path.join(BASE_DIR, "evaluate.py"),
-    )
-    evaluation_report = PropertyFile(
-        name="MLEvaluationReport",
-        output_name="evaluation",
-        path="evaluation.json"
-    )
-    step_eval = ProcessingStep(
-        name="EvaluateUsedCarMLModel",
-        step_args=step_args,
-        property_files=[evaluation_report]
     )
 
-    model = Model(
-        image_uri=image_uri,
-        model_data=step_train.properties.ModelArtifacts.S3ModelArtifacts,
-        sagemaker_session=pipeline_session,
-        role=role,
+    transform_inputs = TransformInput(
+        data=step_process.properties.ProcessingOutputConfig.Outputs["test"].S3Output.S3Uri,
     )
 
-    step_args = model.register(
-        content_types=["text/csv"],
-        response_types=["text/csv"],
-        inference_instances=["ml.t2.medium", "ml.m5.large"],
-        transform_instances=transform_instances_type,
-        model_package_group_name=model_package_group_name,
+    step_args = transformer.transform(
+        data=transform_inputs.data,
+        job_name=transform_job_name,
+        input_filter="$[3:]", # Hanya menggunakan index kolom ke-3 dan seterusnya untuk melakukan memprediksi
+        join_source="Input",
+        output_filter="$[0:2]", # Hanya mengeluarkan index kolom ke-0 (target) sampai ke-2 untuk output batch transform
+        content_type="text/csv",
+        split_type="Line",
     )
 
-    step_register = ModelStep(
-        name="RegisterUsedCarMLModel",
+    step_transform = TransformStep(
+        name="UsedCarPredictionTransform",
         step_args=step_args,
     )
-
+    
     # Pipeline instance
     pipeline = Pipeline(
         name=pipeline_name,
@@ -258,7 +202,7 @@ def get_pipeline(
             input_data_crawling
             
         ],
-        steps=[step_process, step_train, step_create_model, step_eval],
+        steps=[step_process, step_create_model, step_transform],
         sagemaker_session=pipeline_session,
     )
     return pipeline
