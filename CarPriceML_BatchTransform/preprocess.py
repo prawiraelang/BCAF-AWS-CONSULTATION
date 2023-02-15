@@ -1,12 +1,12 @@
-# Preprocess for Training Pipeline
+# Preprocess for Batch Transform
 import argparse
 import logging
 import os
 import pathlib
 import boto3
 import pandas as pd
-from time import gmtime, strftime
 
+from time import gmtime, strftime
 from sklearn.model_selection import train_test_split
 
 '''
@@ -32,7 +32,7 @@ if __name__ == "__main__":
     key_lelang = "/".join(input_data_lelang.split("/")[3:])
     bucket_crawling = input_data_crawling.split("/")[2]
     key_crawling = "/".join(input_data_crawling.split("/")[3:])
-
+    
     logger.info("Downloading lelang data from <%s/%s>...", bucket_lelang, key_lelang)
     s3 = boto3.resource("s3", region_name="ap-southeast-3")
     
@@ -44,36 +44,22 @@ if __name__ == "__main__":
     s3.Bucket(bucket_crawling).download_file(key_crawling, crawling_path)
 
     logger.info("Reading lelang data...")
-    df1 = pd.read_csv(lelang_path) # Pastikan file sudah dalam format CSV
+    df_lelang = pd.read_csv(lelang_path)
     os.unlink(lelang_path)
     
     logger.info("Reading crawling data...")
-    df2 = pd.read_csv(crawling_path) # Pastikan file sudah dalam format CSV
+    df_crawling = pd.read_csv(crawling_path)
     os.unlink(crawling_path)
     
     '''
     Add your own preprocessing step here!
-    Tambahkan kode preprocessing yang sudah dibuat sebelumnnya
-    Jangan lupa untuk membiarkan kolom nopol tetap ada di test sets
     '''
     
-    logger.info("Splitting rows of joined data into train, validation, test sets...")
-    # Separate the features and the target columns
-    X = df.drop(df.columns[0], axis=1) # Variabel df silakan diganti dengan df_gabungan atau df akhir hasil proses join
-    y = df[df.columns[0]]
+    df = df_lelang # You need to join df_lelang and df_crawling after/before you preprocess it
+
+    # unique_key = strftime("%Y%m%d-%H:%M:%S", gmtime())
+    unique_key = strftime("%Y%m%d", gmtime())
     
-    # Splitting data into train, validation, and test sets
-    X_trainval, X_test, y_trainval, y_test = train_test_split(X, y, test_size=0.1, random_state=293)
-    X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.2, random_state=342)
-
-    # Concatenate data
-    # The target column must in the first column
-    df_train = pd.concat([y_train, pd.DataFrame(X_train, index=X_train.index, columns=X_train.columns)], axis=1)
-    df_val = pd.concat([y_val, pd.DataFrame(X_val, index=X_val.index, columns=X_val.columns)], axis=1)
-    df_test = pd.concat([y_test, pd.DataFrame(X_test, index=X_test.index, columns=X_test.columns)], axis=1)
-
-    unique_key = strftime("%Y%m%d-%H:%M:%S", gmtime())
-    logger.info("Writing out datasets to <%s>...", bucket_crawling)
-    df_train.to_csv(f"{base_dir}/train/train.csv", header=False, index=False)
-    df_val.to_csv(f"{base_dir}/validation/validation.csv", header=False, index=False)
-    df_test.to_csv(f"{base_dir}/test/test.csv", header=False, index=False)
+    # Save the data to base directory
+    logger.info("Writing out dataset to base directory...")
+    df.to_csv(f"{base_dir}/predict/predict.csv", header=False, index=False)

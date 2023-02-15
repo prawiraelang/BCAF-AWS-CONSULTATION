@@ -1,12 +1,12 @@
-# Preprocess for Training Pipeline
+# Preprocess for Training
 import argparse
 import logging
 import os
 import pathlib
 import boto3
 import pandas as pd
-from time import gmtime, strftime
 
+from time import gmtime, strftime
 from sklearn.model_selection import train_test_split
 
 '''
@@ -18,7 +18,7 @@ logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
 if __name__ == "__main__":
-    logger.debug("Starting preprocessing...")
+    logger.info("Starting preprocessing...")
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-data-lelang", type=str, required=True)
     parser.add_argument("--input-data-crawling", type=str, required=True)
@@ -33,6 +33,8 @@ if __name__ == "__main__":
     bucket_crawling = input_data_crawling.split("/")[2]
     key_crawling = "/".join(input_data_crawling.split("/")[3:])
 
+    default_bucket = "carprice-ml-input"
+    
     logger.info("Downloading lelang data from <%s/%s>...", bucket_lelang, key_lelang)
     s3 = boto3.resource("s3", region_name="ap-southeast-3")
     
@@ -44,21 +46,22 @@ if __name__ == "__main__":
     s3.Bucket(bucket_crawling).download_file(key_crawling, crawling_path)
 
     logger.info("Reading lelang data...")
-    df1 = pd.read_csv(lelang_path) # Pastikan file sudah dalam format CSV
+    df_lelang = pd.read_csv(lelang_path)
     os.unlink(lelang_path)
     
     logger.info("Reading crawling data...")
-    df2 = pd.read_csv(crawling_path) # Pastikan file sudah dalam format CSV
+    df_crawling = pd.read_csv(crawling_path)
     os.unlink(crawling_path)
     
     '''
     Add your own preprocessing step here!
-    Tambahkan kode preprocessing yang sudah dibuat sebelumnnya
     '''
     
+    df = df_lelang # You need to join df_lelang and df_crawling after/before you preprocess it
+
     logger.info("Splitting rows of joined data into train, validation, test sets...")
     # Separate the features and the target columns
-    X = df.drop(df.columns[0], axis=1) # Variabel df silakan diganti dengan df_gabungan atau df akhir hasil proses join
+    X = df.drop(df.columns[0], axis=1)
     y = df[df.columns[0]]
     
     # Splitting data into train, validation, and test sets
@@ -71,15 +74,16 @@ if __name__ == "__main__":
     df_val = pd.concat([y_val, pd.DataFrame(X_val, index=X_val.index, columns=X_val.columns)], axis=1)
     df_test = pd.concat([y_test, pd.DataFrame(X_test, index=X_test.index, columns=X_test.columns)], axis=1)
 
-    unique_key = strftime("%Y%m%d-%H:%M:%S", gmtime())
-    logger.info("Writing out datasets to <%s>...", bucket_crawling)
+    # unique_key = strftime("%Y%m%d-%H:%M:%S", gmtime())
+    unique_key = strftime("%Y%m%d", gmtime())
+    
+    # Save the data to local directory
+    logger.info("Writing out datasets to <%s>...", default_bucket)
     df_train.to_csv(f"{base_dir}/train/train.csv", header=False, index=False)
     df_val.to_csv(f"{base_dir}/validation/validation.csv", header=False, index=False)
     df_test.to_csv(f"{base_dir}/test/test.csv", header=False, index=False)
     
     # Upload the data to S3
-    # Pastikan key sudah sesuai dengan direktori yang ada di S3
-    s3.meta.client.upload_file(f"{base_dir}/train/train.csv", Bucket=bucket_lelang, Key=f"training/train/{unique_key}/train.csv")
-    s3.meta.client.upload_file(f"{base_dir}/validation/validation.csv", Bucket=bucket_lelang, Key=f"training/validation/{unique_key}/validation.csv")
-    s3.meta.client.upload_file(f"{base_dir}/test/test.csv", Bucket=bucket_lelang, Key=f"training/test/{unique_key}/test.csv")
-    s3.meta.client.upload_file(f"{base_dir}/test/test.csv", Bucket=bucket_lelang, Key=f"out_batch/input/{unique_key}/predict.csv")
+    s3.meta.client.upload_file(f"{base_dir}/train/train.csv", Bucket=default_bucket, Key=f"training/output/train/{unique_key}/train.csv")
+    s3.meta.client.upload_file(f"{base_dir}/validation/validation.csv", Bucket=default_bucket, Key=f"training/output/validation/{unique_key}/validation.csv")
+    s3.meta.client.upload_file(f"{base_dir}/test/test.csv", Bucket=default_bucket, Key=f"training/output/test/{unique_key}/test.csv")

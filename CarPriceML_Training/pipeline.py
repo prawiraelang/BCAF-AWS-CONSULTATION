@@ -1,47 +1,28 @@
-# Pipeline for Training Pipeline
+# Pipeline for Training
 import os
 import boto3
 import sagemaker
 import sagemaker.session
 
 from sagemaker.estimator import Estimator
-from sagemaker.inputs import TrainingInput, CreateModelInput, TransformInput
+from sagemaker.inputs import TrainingInput
 from sagemaker.model import Model
-from sagemaker.transformer import Transformer
-
-from sagemaker.processing import (
-    ProcessingInput,
-    ProcessingOutput,
-    ScriptProcessor,
-)
+from sagemaker.processing import ProcessingInput, ProcessingOutput, ScriptProcessor
 from sagemaker.sklearn.processing import SKLearnProcessor
-
-from sagemaker.workflow.parameters import (
-    ParameterBoolean,
-    ParameterInteger,
-    ParameterString,
-)
+from sagemaker.workflow.parameters import ParameterInteger, ParameterString
 from sagemaker.workflow.pipeline import Pipeline
-from sagemaker.workflow.properties import PropertyFile
-from sagemaker.workflow.steps import (
-    ProcessingStep,
-    TrainingStep,
-    CreateModelStep,
-    TransformStep
-)
-
+from sagemaker.workflow.steps import ProcessingStep, TrainingStep, CreateModelStep
 from sagemaker.workflow.model_step import ModelStep
-from sagemaker.model import Model
 from sagemaker.workflow.pipeline_context import PipelineSession
 from time import gmtime, strftime
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
-def get_session(region, default_bucket):
+def get_sagemaker_session(region, default_bucket):
     boto_session = boto3.Session(region_name=region)
-
     sagemaker_client = boto_session.client("sagemaker")
     runtime_client = boto_session.client("sagemaker-runtime")
+    
     return sagemaker.session.Session(
         boto_session=boto_session,
         sagemaker_client=sagemaker_client,
@@ -61,43 +42,58 @@ def get_pipeline_session(region, default_bucket):
     )
 
 def get_pipeline(
-    region,
-    sagemaker_project_arn=None,
+    region=None,
     role=None,
     default_bucket=None,
-    model_package_group_name="UsedCarMLPackageGroup",
-    pipeline_name="UsedCarMLPipeline",
-    base_job_prefix="UsedCarML",
-    processing_instance_type="ml.m5.xlarge",
-    processing_instance_count=1,
-    training_instance_type="ml.m5.xlarge",
-    training_instance_count=1,
-    transform_instances_type="ml.m5.large"
+    pipeline_name=None,
+    processing_instance_type=None,
+    processing_instance_count=None,
+    training_instance_type=None,
+    training_instance_count=None
 ):
-    sagemaker_session = get_session(region, default_bucket)
-   
+    if region is None:
+        region = boto3.Session().region_name
+        
     if default_bucket is None:
-        default_bucket = "sample-bucket-11" # Gunakan bucket yang ada di Singapore
-    if role is None:
-        role = sagemaker.session.get_execution_role(sagemaker_session)
-
+        default_bucket = "carprice-ml-output"
+    
+    sagemaker_session = get_sagemaker_session(region, default_bucket)
     pipeline_session = get_pipeline_session(region, default_bucket)
     
+    if role is None:
+        role = sagemaker.session.get_execution_role(sagemaker_session)
+        
     # Parameters for pipeline execution
     processing_instance_type = ParameterString(name="ProcessingInstanceType", default_value="ml.m5.xlarge")
     processing_instance_count = ParameterInteger(name="ProcessingInstanceCount", default_value=1)
     training_instance_type = ParameterString(name="TrainingInstanceType", default_value="ml.m5.xlarge")
     training_instance_count = ParameterInteger(name="TrainingInstanceCount", default_value=1)
-    transform_instances_type = ParameterString(name="TransformInstanceType", default_value="ml.m5.large")
+
+    s3_client = boto3.client("s3", region_name="ap-southeast-3") # Override region values
+
+    def get_latest_file(bucket_name, prefix_name):
+        s3_uri_response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix_name)
+        latest_key = sorted(s3_uri_response.get("Contents", []), key=lambda x: x["LastModified"], reverse=True)[0]["Key"]
     
-    # Ganti path sesuai lokasi file di direktori S3 dan pastikan file sudah memiliki format CSV
+        return f"s3://{bucket_name}/{latest_key}"
+    
+    s3_uri_lelang = get_latest_file(
+        "carprice-ml-input",
+        "training/lelang"
+    )
+
+    s3_uri_crawling = get_latest_file(
+        "carprice-ml-input",
+        "training/crawling"
+    )
+
     input_data_lelang = ParameterString(
         name="InputDataLelangURI",
-        default_value=f"s3://bcafbucket/training/raw/lelang/used-car-price-prediction-cleaned.csv",
+        default_value=s3_uri_lelang
     )
     input_data_crawling = ParameterString(
         name="InputDataCrawlingURI",
-        default_value=f"s3://bcafbucket/training/raw/crawling/used-car-price-prediction-cleaned.csv",
+        default_value=s3_uri_crawling
     )
 
     # Processing step
@@ -105,9 +101,8 @@ def get_pipeline(
         framework_version="0.23-1",
         instance_type=processing_instance_type,
         instance_count=processing_instance_count,
-        base_job_name=f"{base_job_prefix}/Preprocess",
         sagemaker_session=pipeline_session,
-        role=role,
+        role=role
     )
 
     step_args = sklearn_processor.run(
@@ -121,22 +116,22 @@ def get_pipeline(
                    "--input-data-crawling", input_data_crawling]
     )
 
-    step_process = ProcessingStep(
-        name="PreprocessUsedCarMLData",
-        step_args=step_args,        
+    step_preprocess = ProcessingStep(
+        name="CarPriceML-Preprocess",
+        step_args=step_args      
     )
 
-    model_path = f"s3://bcafbucket/model" # Path tempat menyimpan model di bucket region Jakarta 
-    unique_key = strftime("%Y%m%d-%H:%M:%S", gmtime())
-    model_name = f"xgboost-model{unique_key}"
-    training_job_name = f"xgboost-training-job{unique_key}"
+    # Train step
+    unique_key = strftime("%Y%m%d", gmtime())
+
+    model_path = f"s3://carprice-ml-output/model/{unique_key}"
     
     image_uri = sagemaker.image_uris.retrieve(
         framework="xgboost",
         region=region,
         version="1.5-1",
         py_version="py3",
-        instance_type=training_instance_type,
+        instance_type=training_instance_type
     )
 
     xgb = Estimator(
@@ -145,11 +140,9 @@ def get_pipeline(
         instance_count=training_instance_count,
         output_path=model_path,
         sagemaker_session=pipeline_session,
-        role=role,
-        base_job_name="xgboost-training-job-sample"
+        role=role
     )
 
-    # Silakan sesuaikan hyperparameter sesuai dengan hyperparameter terbaik dari percobaan yang pernah dilakukan
     xgb.set_hyperparameters(
         objective="reg:squarederror",
         num_round=10,
@@ -163,89 +156,64 @@ def get_pipeline(
     step_args = xgb.fit(
         inputs={
             "train": TrainingInput(
-                s3_data=step_process.properties.ProcessingOutputConfig.Outputs["train"].S3Output.S3Uri, content_type="text/csv"),
+                s3_data=step_preprocess.properties.ProcessingOutputConfig.Outputs["train"].S3Output.S3Uri, content_type="csv"),
             "validation": TrainingInput(
-                s3_data=step_process.properties.ProcessingOutputConfig.Outputs["validation"].S3Output.S3Uri, content_type="text/csv",),
-        },
+                s3_data=step_preprocess.properties.ProcessingOutputConfig.Outputs["validation"].S3Output.S3Uri, content_type="csv")
+        }
     )
 
     step_train = TrainingStep(
-        name="TrainUsedCarMLModel",
+        name="CarPriceML-Train",
         step_args=step_args
     )
 
+    # Create Model step
     model = Model(
         image_uri=image_uri,
         model_data=step_train.properties.ModelArtifacts.S3ModelArtifacts,
         sagemaker_session=pipeline_session,
-        role=role,
-        name=model_name
+        role=role
     )
 
     step_args = model.create(
-        instance_type="ml.m5.large",
+        instance_type="ml.m5.xlarge",
         accelerator_type="ml.eia1.medium"
     )
 
     step_create_model = ModelStep(
-        name="UsedCarMLCreateModel",
-        step_args=step_args,
+        name="CarPriceML",
+        step_args=step_args
     )
     
+    # Evaluation step
     script_eval = ScriptProcessor(
         image_uri=image_uri,
         command=["python3"],
         instance_type=processing_instance_type,
         instance_count=processing_instance_count,
-        base_job_name=f"{base_job_prefix}/Eval",
         sagemaker_session=pipeline_session,
-        role=role,
+        role=role
     )
     
     step_args = script_eval.run(
         inputs=[
             ProcessingInput(
-                source=step_train.properties.ModelArtifacts.S3ModelArtifacts, destination="/opt/ml/processing/model",
+                source=step_train.properties.ModelArtifacts.S3ModelArtifacts, destination="/opt/ml/processing/model"
             ),
             ProcessingInput(
-                source=step_process.properties.ProcessingOutputConfig.Outputs["test"].S3Output.S3Uri,
-                destination="/opt/ml/processing/test",
+                source=step_preprocess.properties.ProcessingOutputConfig.Outputs["test"].S3Output.S3Uri,
+                destination="/opt/ml/processing/test"
             ),
         ],
         outputs=[
-            ProcessingOutput(output_name="evaluation", source="/opt/ml/processing/evaluation"),
+            ProcessingOutput(output_name="evaluation", source="/opt/ml/processing/evaluation")
         ],
-        code=os.path.join(BASE_DIR, "evaluate.py"),
+        code=os.path.join(BASE_DIR, "evaluate.py")
     )
-    evaluation_report = PropertyFile(
-        name="MLEvaluationReport",
-        output_name="evaluation",
-        path="evaluation.json"
-    )
+    
     step_eval = ProcessingStep(
-        name="EvaluateUsedCarMLModel",
-        step_args=step_args,
-        property_files=[evaluation_report]
-    )
-
-    model = Model(
-        image_uri=image_uri,
-        model_data=step_train.properties.ModelArtifacts.S3ModelArtifacts,
-        sagemaker_session=pipeline_session,
-        role=role,
-    )
-
-    step_args = model.register(
-        content_types=["text/csv"],
-        response_types=["text/csv"],
-        inference_instances=["ml.t2.medium", "ml.m5.large"],
-        transform_instances=transform_instances_type,
-        model_package_group_name=model_package_group_name,
-    )
-
-    step_register = ModelStep(
-        name="RegisterUsedCarMLModel",
-        step_args=step_args,
+        name="CarPriceML-Evaluate",
+        step_args=step_args
     )
 
     # Pipeline instance
@@ -256,12 +224,12 @@ def get_pipeline(
             processing_instance_count,
             training_instance_type,
             training_instance_count,
-            transform_instances_type,
             input_data_lelang,
             input_data_crawling
             
         ],
-        steps=[step_process, step_train, step_create_model, step_eval],
+        steps=[step_preprocess, step_train, step_create_model, step_eval],
         sagemaker_session=pipeline_session,
     )
+    
     return pipeline
