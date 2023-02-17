@@ -17,10 +17,11 @@ logger.addHandler(logging.StreamHandler())
 
 if __name__ == "__main__":
     logger.info("Starting evaluation...")
-    s3 = boto3.resource("s3", region_name="ap-southeast-3")
+    s3_virginia = boto3.resource("s3", region_name="us-east-1")
     
     model_path = "/opt/ml/processing/model/model.tar.gz"
-    default_bucket = "carprice-ml-output"
+    unique_key = strftime("%Y%m%d", gmtime())
+    default_bucket = "glair-exploration-sagemaker-bucket"
     
     with tarfile.open(model_path) as tar:
         tar.extractall(path="..")
@@ -58,10 +59,8 @@ if __name__ == "__main__":
     logger.info("Writing out evaluation report...")
     logger.info("RMSE is %f", rmse)
     logger.info("Standard deviaton is %f", std)
-    
-    unique_key = strftime("%Y%m%d", gmtime())
     evaluation_path = f"{output_dir}/evaluation.json"
     with open(evaluation_path, "w") as f:
         f.write(json.dumps(report_dict))
 
-    s3.meta.client.upload_file(f"{output_dir}/evaluation.json", Bucket=default_bucket, Key=f"evaluation/{unique_key}/evaluation.json")
+    s3_virginia.meta.client.upload_file(f"{output_dir}/evaluation.json", Bucket=default_bucket, Key=f"glair-bcaf-consultation-output/evaluation/{unique_key}/evaluation.json")

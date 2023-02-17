@@ -18,7 +18,7 @@ logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
 if __name__ == "__main__":
-    logger.debug("Starting preprocessing...")
+    logger.info("Starting preprocessing...")
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-data-lelang", type=str, required=True)
     parser.add_argument("--input-data-crawling", type=str, required=True)
@@ -28,20 +28,24 @@ if __name__ == "__main__":
     pathlib.Path(f"{base_dir}/raw").mkdir(parents=True, exist_ok=True)
     input_data_lelang = args.input_data_lelang
     input_data_crawling = args.input_data_crawling
+    
     bucket_lelang = input_data_lelang.split("/")[2]
     key_lelang = "/".join(input_data_lelang.split("/")[3:])
+    
     bucket_crawling = input_data_crawling.split("/")[2]
     key_crawling = "/".join(input_data_crawling.split("/")[3:])
     
+    name_batch_out = "predict" # This variable MUST be the same as in postprocess.py
+    
     logger.info("Downloading lelang data from <%s/%s>...", bucket_lelang, key_lelang)
-    s3 = boto3.resource("s3", region_name="ap-southeast-3")
+    s3_singapore = boto3.resource("s3", region_name="ap-southeast-1")
     
     lelang_path = f"{base_dir}/raw/lelang.csv"
-    s3.Bucket(bucket_lelang).download_file(key_lelang, lelang_path)
+    s3_singapore.Bucket(bucket_lelang).download_file(key_lelang, lelang_path)
     
     logger.info("Downloading lelang data from <%s/%s>...", bucket_crawling, key_crawling)
     crawling_path = f"{base_dir}/raw/crawling.csv"
-    s3.Bucket(bucket_crawling).download_file(key_crawling, crawling_path)
+    s3_singapore.Bucket(bucket_crawling).download_file(key_crawling, crawling_path)
 
     logger.info("Reading lelang data...")
     df_lelang = pd.read_csv(lelang_path)
@@ -62,4 +66,5 @@ if __name__ == "__main__":
     
     # Save the data to base directory
     logger.info("Writing out dataset to base directory...")
-    df.to_csv(f"{base_dir}/predict/predict.csv", header=False, index=False)
+    logger.info(df.shape)
+    df.to_csv(f"{base_dir}/predict/{name_batch_out}.csv", header=False, index=False)

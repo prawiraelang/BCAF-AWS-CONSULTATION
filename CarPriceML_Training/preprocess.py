@@ -28,22 +28,25 @@ if __name__ == "__main__":
     pathlib.Path(f"{base_dir}/raw").mkdir(parents=True, exist_ok=True)
     input_data_lelang = args.input_data_lelang
     input_data_crawling = args.input_data_crawling
+    
     bucket_lelang = input_data_lelang.split("/")[2]
     key_lelang = "/".join(input_data_lelang.split("/")[3:])
+    
     bucket_crawling = input_data_crawling.split("/")[2]
     key_crawling = "/".join(input_data_crawling.split("/")[3:])
 
-    default_bucket = "carprice-ml-input"
+    default_bucket = "glair-exploration-sagemaker-bucket" # To save the train, val, test data
     
     logger.info("Downloading lelang data from <%s/%s>...", bucket_lelang, key_lelang)
-    s3 = boto3.resource("s3", region_name="ap-southeast-3")
+    s3_singapore = boto3.resource("s3", region_name="ap-southeast-1")
+    s3_virginia = boto3.resource("s3", region_name="us-east-1")
     
     lelang_path = f"{base_dir}/raw/lelang.csv"
-    s3.Bucket(bucket_lelang).download_file(key_lelang, lelang_path)
+    s3_singapore.Bucket(bucket_lelang).download_file(key_lelang, lelang_path)
     
-    logger.info("Downloading lelang data from <%s/%s>...", bucket_crawling, key_crawling)
+    logger.info("Downloading crawling data from <%s/%s>...", bucket_crawling, key_crawling)
     crawling_path = f"{base_dir}/raw/crawling.csv"
-    s3.Bucket(bucket_crawling).download_file(key_crawling, crawling_path)
+    s3_singapore.Bucket(bucket_crawling).download_file(key_crawling, crawling_path)
 
     logger.info("Reading lelang data...")
     df_lelang = pd.read_csv(lelang_path)
@@ -78,12 +81,13 @@ if __name__ == "__main__":
     unique_key = strftime("%Y%m%d", gmtime())
     
     # Save the data to local directory
-    logger.info("Writing out datasets to <%s>...", default_bucket)
+    logger.info("Writing out dataset to base directory...")
     df_train.to_csv(f"{base_dir}/train/train.csv", header=False, index=False)
     df_val.to_csv(f"{base_dir}/validation/validation.csv", header=False, index=False)
     df_test.to_csv(f"{base_dir}/test/test.csv", header=False, index=False)
     
     # Upload the data to S3
-    s3.meta.client.upload_file(f"{base_dir}/train/train.csv", Bucket=default_bucket, Key=f"training/output/train/{unique_key}/train.csv")
-    s3.meta.client.upload_file(f"{base_dir}/validation/validation.csv", Bucket=default_bucket, Key=f"training/output/validation/{unique_key}/validation.csv")
-    s3.meta.client.upload_file(f"{base_dir}/test/test.csv", Bucket=default_bucket, Key=f"training/output/test/{unique_key}/test.csv")
+    logger.info("Writing out datasets to <%s>...", default_bucket)
+    s3_virginia.meta.client.upload_file(f"{base_dir}/train/train.csv", Bucket=default_bucket, Key=f"glair-bcaf-consultation-output/training/train/{unique_key}/train.csv")
+    s3_virginia.meta.client.upload_file(f"{base_dir}/validation/validation.csv", Bucket=default_bucket, Key=f"glair-bcaf-consultation-output/training/validation/{unique_key}/validation.csv")
+    s3_virginia.meta.client.upload_file(f"{base_dir}/test/test.csv", Bucket=default_bucket, Key=f"glair-bcaf-consultation-output/training/test/{unique_key}/test.csv")

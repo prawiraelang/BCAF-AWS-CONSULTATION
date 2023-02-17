@@ -55,7 +55,7 @@ def get_pipeline(
         region = boto3.Session().region_name
         
     if default_bucket is None:
-        default_bucket = "carprice-ml-output"
+        default_bucket = "glair-exploration-sagemaker-bucket"
     
     sagemaker_session = get_sagemaker_session(region, default_bucket)
     pipeline_session = get_pipeline_session(region, default_bucket)
@@ -67,25 +67,25 @@ def get_pipeline(
     processing_instance_type = ParameterString(name="ProcessingInstanceType", default_value="ml.m5.xlarge")
     processing_instance_count = ParameterInteger(name="ProcessingInstanceCount", default_value=1)
     training_instance_type = ParameterString(name="TrainingInstanceType", default_value="ml.m5.xlarge")
-    transform_instances_type = ParameterString(name="TransformInstanceType", default_value="ml.m5.large")
+    transform_instances_type = ParameterString(name="TransformInstanceType", default_value="ml.m5.xlarge")
     transform_instances_count = ParameterInteger(name="TransformInstanceCount", default_value=1)
     
-    s3_client = boto3.client("s3", region_name="ap-southeast-3") # Override region values
+    s3_singapore = boto3.client("s3", region_name="ap-southeast-1")
 
     def get_latest_file(bucket_name, prefix_name):
-        s3_uri_response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix_name)
+        s3_uri_response = s3_singapore.list_objects_v2(Bucket=bucket_name, Prefix=prefix_name)
         latest_key = sorted(s3_uri_response.get("Contents", []), key=lambda x: x["LastModified"], reverse=True)[0]["Key"]
     
         return f"s3://{bucket_name}/{latest_key}"
     
     s3_uri_lelang = get_latest_file(
-        "carprice-ml-input",
-        "batch_transform/lelang"
+        "glair-exploration-sagemaker-s3-bucket-singapore",
+        "glair-bcaf-consultation-input/batch-transform"
     )
 
     s3_uri_crawling = get_latest_file(
-        "carprice-ml-input",
-        "batch_transform/crawling"
+        "glair-exploration-sagemaker-s3-bucket-singapore",
+        "glair-bcaf-consultation-input/training/crawling"
     )
     
     input_data_lelang = ParameterString(
@@ -121,15 +121,15 @@ def get_pipeline(
     )
 
     # Batch transform step
-    sagemaker_client = boto3.client('sagemaker')
+    sagemaker_virginia = boto3.client('sagemaker', region_name="us-east-1")
     
     def get_latest_model():
-        model_response = sagemaker_client.list_models(
+        model_response = sagemaker_virginia.list_models(
             SortBy='CreationTime',
             SortOrder='Descending'
         )
 
-        s3_uri_response = sagemaker_client.describe_model(
+        s3_uri_response = sagemaker_virginia.describe_model(
             ModelName=model_response['Models'][0]['ModelName']
         )
     
@@ -146,7 +146,7 @@ def get_pipeline(
         instance_count=transform_instances_count,
         accept="text/csv",
         assemble_with="Line",
-        output_path=f"s3://{default_bucket}/batch_transform/{unique_key}",
+        output_path=f"s3://glair-exploration-sagemaker-bucket/glair-bcaf-consultation-output/batch-transform/raw/{unique_key}",
         sagemaker_session=pipeline_session
     )
 
@@ -154,11 +154,20 @@ def get_pipeline(
         data=step_preprocess.properties.ProcessingOutputConfig.Outputs["predict"].S3Output.S3Uri,
     )
 
+    # If you want to filter the output of batch transform or join it with the input source, use this block of code
+    # step_args = transformer.transform(
+    #     data=transform_inputs.data,
+    #     input_filter="$[0:]",
+    #     join_source="Input",
+    #     output_filter="$[0,-1]",
+    #     content_type="text/csv",
+    #     split_type="Line"
+    # )
+    
+    # If you only want the label column of batch transform, use this block of code
     step_args = transformer.transform(
         data=transform_inputs.data,
         input_filter="$[0:]",
-        join_source="Input",
-        output_filter="$[0,-2,-1]",
         content_type="text/csv",
         split_type="Line"
     )
@@ -168,6 +177,19 @@ def get_pipeline(
         step_args=step_args
     )
 
+    # Postprocessing step
+    step_args = sklearn_processor.run(
+        code=os.path.join(BASE_DIR, "postprocess.py"),
+        arguments=["--input-data-lelang", input_data_lelang,
+                   "--input-data-crawling", input_data_crawling,
+                   "--input-batch", step_transform.properties.TransformOutput.S3OutputPath]
+    )
+
+    step_postprocess = ProcessingStep(
+        name="CarPriceML-Postprocess",
+        step_args=step_args      
+    )
+    
     # Pipeline instance
     pipeline = Pipeline(
         name=pipeline_name,
@@ -181,7 +203,7 @@ def get_pipeline(
             input_data_crawling
             
         ],
-        steps=[step_preprocess, step_transform],
+        steps=[step_preprocess, step_transform, step_postprocess],
         sagemaker_session=pipeline_session,
     )
     

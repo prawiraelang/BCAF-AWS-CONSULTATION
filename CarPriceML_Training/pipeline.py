@@ -55,7 +55,7 @@ def get_pipeline(
         region = boto3.Session().region_name
         
     if default_bucket is None:
-        default_bucket = "carprice-ml-output"
+        default_bucket = "glair-exploration-sagemaker-bucket" # To save and run the pipeline
     
     sagemaker_session = get_sagemaker_session(region, default_bucket)
     pipeline_session = get_pipeline_session(region, default_bucket)
@@ -69,22 +69,22 @@ def get_pipeline(
     training_instance_type = ParameterString(name="TrainingInstanceType", default_value="ml.m5.xlarge")
     training_instance_count = ParameterInteger(name="TrainingInstanceCount", default_value=1)
 
-    s3_client = boto3.client("s3", region_name="ap-southeast-3") # Override region values
+    s3_singapore = boto3.client("s3", region_name="ap-southeast-1")
 
     def get_latest_file(bucket_name, prefix_name):
-        s3_uri_response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix_name)
+        s3_uri_response = s3_singapore.list_objects_v2(Bucket=bucket_name, Prefix=prefix_name)
         latest_key = sorted(s3_uri_response.get("Contents", []), key=lambda x: x["LastModified"], reverse=True)[0]["Key"]
     
         return f"s3://{bucket_name}/{latest_key}"
     
     s3_uri_lelang = get_latest_file(
-        "carprice-ml-input",
-        "training/lelang"
+        "glair-exploration-sagemaker-s3-bucket-singapore",
+        "glair-bcaf-consultation-input/training/lelang"
     )
 
     s3_uri_crawling = get_latest_file(
-        "carprice-ml-input",
-        "training/crawling"
+        "glair-exploration-sagemaker-s3-bucket-singapore",
+        "glair-bcaf-consultation-input/training/crawling"
     )
 
     input_data_lelang = ParameterString(
@@ -121,10 +121,11 @@ def get_pipeline(
         step_args=step_args      
     )
 
-    # Train step
+    # unique_key = strftime("%Y%m%d-%H:%M:%S", gmtime())
     unique_key = strftime("%Y%m%d", gmtime())
-
-    model_path = f"s3://carprice-ml-output/model/{unique_key}"
+    
+    # Train step
+    model_path = f"s3://glair-exploration-sagemaker-bucket/glair-bcaf-consultation-output/model/{unique_key}"
     
     image_uri = sagemaker.image_uris.retrieve(
         framework="xgboost",
