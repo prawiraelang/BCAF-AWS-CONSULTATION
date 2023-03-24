@@ -21,7 +21,7 @@ if __name__ == "__main__":
     
     model_path = "/opt/ml/processing/model/model.tar.gz"
     unique_key = strftime("%Y%m%d", gmtime())
-    default_bucket = "glair-exploration-sagemaker-bucket"
+    default_bucket = "glair-exploration-sagemaker-bucket" # To save evaluation report
     
     with tarfile.open(model_path) as tar:
         tar.extractall(path="..")
@@ -59,6 +59,7 @@ if __name__ == "__main__":
     logger.info("Writing out evaluation report...")
     logger.info("RMSE is %f", rmse)
     logger.info("Standard deviaton is %f", std)
+    
     evaluation_path = f"{output_dir}/evaluation.json"
     with open(evaluation_path, "w") as f:
         f.write(json.dumps(report_dict))

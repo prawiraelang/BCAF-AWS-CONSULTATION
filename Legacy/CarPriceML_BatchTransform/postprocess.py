@@ -84,7 +84,7 @@ if __name__ == "__main__":
     
     # Save the data to base directory
     logger.info("Writing out dataset to base directory...")
-    df.to_csv(f"{base_dir}/data/batch_out.csv", index=False)
+    df_result.to_csv(f"{base_dir}/data/batch_out.csv", index=False)
     
     # Upload the data to S3
     logger.info("Writing out datasets to <%s>...", bucket_batch_out)

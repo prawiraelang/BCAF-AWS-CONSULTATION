@@ -70,31 +70,11 @@ def get_pipeline(
     transform_instances_type = ParameterString(name="TransformInstanceType", default_value="ml.m5.xlarge")
     transform_instances_count = ParameterInteger(name="TransformInstanceCount", default_value=1)
     
-    s3_singapore = boto3.client("s3", region_name="ap-southeast-1")
-
-    def get_latest_file(bucket_name, prefix_name):
-        s3_uri_response = s3_singapore.list_objects_v2(Bucket=bucket_name, Prefix=prefix_name)
-        latest_key = sorted(s3_uri_response.get("Contents", []), key=lambda x: x["LastModified"], reverse=True)[0]["Key"]
-    
-        return f"s3://{bucket_name}/{latest_key}"
-    
-    s3_uri_lelang = get_latest_file(
-        "glair-exploration-sagemaker-s3-bucket-singapore",
-        "glair-bcaf-consultation-input/batch-transform"
-    )
-
-    s3_uri_crawling = get_latest_file(
-        "glair-exploration-sagemaker-s3-bucket-singapore",
-        "glair-bcaf-consultation-input/training/crawling"
-    )
-    
     input_data_lelang = ParameterString(
-        name="InputDataLelangURI",
-        default_value=s3_uri_lelang
+        name="InputDataLelangURI"
     )
     input_data_crawling = ParameterString(
-        name="InputDataCrawlingURI",
-        default_value=s3_uri_crawling
+        name="InputDataCrawlingURI"
     )
 
     # Processing step
@@ -121,27 +101,14 @@ def get_pipeline(
     )
 
     # Batch transform step
-    sagemaker_virginia = boto3.client('sagemaker', region_name="us-east-1")
-    
-    def get_latest_model():
-        model_response = sagemaker_virginia.list_models(
-            SortBy='CreationTime',
-            SortOrder='Descending'
+    model_name = ParameterString(
+            name="ModelName"
         )
-
-        s3_uri_response = sagemaker_virginia.describe_model(
-            ModelName=model_response['Models'][0]['ModelName']
-        )
-    
-        return s3_uri_response['PrimaryContainer']['ModelDataUrl'], model_response['Models'][0]['ModelName']
-
-    s3_uri_model = get_latest_model()
-
     # unique_key = strftime("%Y%m%d-%H:%M:%S", gmtime())
     unique_key = strftime("%Y%m%d", gmtime())
     
     transformer = Transformer(
-        model_name=s3_uri_model[1],
+        model_name=model_name,
         instance_type=transform_instances_type,
         instance_count=transform_instances_count,
         accept="text/csv",
@@ -200,8 +167,8 @@ def get_pipeline(
             transform_instances_type,
             transform_instances_count,
             input_data_lelang,
-            input_data_crawling
-            
+            input_data_crawling,
+            model_name
         ],
         steps=[step_preprocess, step_transform, step_postprocess],
         sagemaker_session=pipeline_session,

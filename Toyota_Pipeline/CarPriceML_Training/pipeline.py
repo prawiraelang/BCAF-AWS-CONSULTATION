@@ -1,4 +1,4 @@
-# Pipeline for Training
+# Pipeline for Training With Constant
 import os
 import boto3
 import sagemaker
@@ -9,12 +9,24 @@ from sagemaker.inputs import TrainingInput
 from sagemaker.model import Model
 from sagemaker.processing import ProcessingInput, ProcessingOutput, ScriptProcessor
 from sagemaker.sklearn.processing import SKLearnProcessor
-from sagemaker.workflow.parameters import ParameterInteger, ParameterString
+from sagemaker.workflow.parameters import ParameterInteger, ParameterString, ParameterFloat
 from sagemaker.workflow.pipeline import Pipeline
-from sagemaker.workflow.steps import ProcessingStep, TrainingStep, CreateModelStep
+from sagemaker.workflow.steps import ProcessingStep, TrainingStep, CacheConfig
 from sagemaker.workflow.model_step import ModelStep
 from sagemaker.workflow.pipeline_context import PipelineSession
-from time import gmtime, strftime
+from time import gmtime, strftime 
+
+'''
+Edit below section only according to your needs!
+'''
+DEFAULT_BUCKET = "glair-exploration-bcaf-consultation"
+PREFIX_PREPROCESS = "glair-bcaf-consultation-output/training"
+PREFIX_MODEL = "glair-bcaf-consultation-output/model"
+PREFIX_EVALUATION = "glair-bcaf-consultation-output/evaluation"
+MODEL_TYPE = "toyota"
+'''
+Edit above section only according to your needs!
+'''
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
@@ -29,7 +41,6 @@ def get_sagemaker_session(region, default_bucket):
         sagemaker_runtime_client=runtime_client,
         default_bucket=default_bucket
     )
-
 
 def get_pipeline_session(region, default_bucket):
     boto_session = boto3.Session(region_name=region)
@@ -55,7 +66,7 @@ def get_pipeline(
         region = boto3.Session().region_name
         
     if default_bucket is None:
-        default_bucket = "glair-exploration-sagemaker-bucket" # To save and run the pipeline
+        default_bucket = DEFAULT_BUCKET # To save and run the pipeline
     
     sagemaker_session = get_sagemaker_session(region, default_bucket)
     pipeline_session = get_pipeline_session(region, default_bucket)
@@ -64,45 +75,48 @@ def get_pipeline(
         role = sagemaker.session.get_execution_role(sagemaker_session)
         
     # Parameters for pipeline execution
-    processing_instance_type = ParameterString(name="ProcessingInstanceType", default_value="ml.m5.xlarge")
+    processing_instance_type = ParameterString(name="ProcessingInstanceType", default_value="ml.m5.large")
     processing_instance_count = ParameterInteger(name="ProcessingInstanceCount", default_value=1)
-    training_instance_type = ParameterString(name="TrainingInstanceType", default_value="ml.m5.xlarge")
+    training_instance_type = ParameterString(name="TrainingInstanceType", default_value="ml.m5.large")
     training_instance_count = ParameterInteger(name="TrainingInstanceCount", default_value=1)
-
-    s3_singapore = boto3.client("s3", region_name="ap-southeast-1")
-
-    def get_latest_file(bucket_name, prefix_name):
-        s3_uri_response = s3_singapore.list_objects_v2(Bucket=bucket_name, Prefix=prefix_name)
-        latest_key = sorted(s3_uri_response.get("Contents", []), key=lambda x: x["LastModified"], reverse=True)[0]["Key"]
     
-        return f"s3://{bucket_name}/{latest_key}"
+    input_data_lelang = ParameterString(name="InputDataLelangURI")
+    input_data_crawling = ParameterString(name="InputDataCrawlingURI")
     
-    s3_uri_lelang = get_latest_file(
-        "glair-exploration-sagemaker-s3-bucket-singapore",
-        "glair-bcaf-consultation-input/training/lelang"
-    )
+    max_depth = ParameterInteger(name="MaxDepth", default_value=5)
+    subsample = ParameterFloat(name="SubSample", default_value=0.9)
+    colsample_bytree = ParameterFloat(name="ColSampleByTree", default_value=0.7)
+    num_round = ParameterInteger(name="NumRound", default_value=82)
+    eta = ParameterFloat(name="ETA", default_value=0.1)
+    min_child_weight = ParameterInteger(name="MinChildWeight", default_value=10)
+    gamma = ParameterInteger(name="Gamma", default_value=1)
+    
+    # Cache Pipeline steps to reduce execution time on subsequent executions
+    cache_config = CacheConfig(enable_caching=True, expire_after="90d")
 
-    s3_uri_crawling = get_latest_file(
-        "glair-exploration-sagemaker-s3-bucket-singapore",
-        "glair-bcaf-consultation-input/training/crawling"
-    )
-
-    input_data_lelang = ParameterString(
-        name="InputDataLelangURI",
-        default_value=s3_uri_lelang
-    )
-    input_data_crawling = ParameterString(
-        name="InputDataCrawlingURI",
-        default_value=s3_uri_crawling
-    )
-
-    # Processing step
+    tags_dict = [
+        {
+            'Key': 'Platform',
+            'Value': 'consulting'
+        },
+        {
+            'Key': 'Tenant',
+            'Value': 'bca-finance'
+        },
+        {
+            'Key': 'Environment',
+            'Value': 'development'
+        },
+    ]    
+    
+    # Preprocess step
     sklearn_processor = SKLearnProcessor(
         framework_version="0.23-1",
         instance_type=processing_instance_type,
         instance_count=processing_instance_count,
         sagemaker_session=pipeline_session,
-        role=role
+        role=role,
+        tags=tags_dict
     )
 
     step_args = sklearn_processor.run(
@@ -113,19 +127,22 @@ def get_pipeline(
         ],
         code=os.path.join(BASE_DIR, "preprocess.py"),
         arguments=["--input-data-lelang", input_data_lelang,
-                   "--input-data-crawling", input_data_crawling]
+                   "--input-data-crawling", input_data_crawling,
+                   "--default-bucket", DEFAULT_BUCKET,
+                   "--model-type", MODEL_TYPE,
+                   "--prefix-preprocess", PREFIX_PREPROCESS]
     )
 
     step_preprocess = ProcessingStep(
-        name="CarPriceML-Preprocess",
+        name=f"{MODEL_TYPE.capitalize()}-CarPriceML-Preprocess",
         step_args=step_args      
     )
 
     # unique_key = strftime("%Y%m%d-%H:%M:%S", gmtime())
     unique_key = strftime("%Y%m%d", gmtime())
     
-    # Train step
-    model_path = f"s3://glair-exploration-sagemaker-bucket/glair-bcaf-consultation-output/model/{unique_key}"
+    # Training step
+    model_path = f"s3://{DEFAULT_BUCKET}/{PREFIX_MODEL}/{MODEL_TYPE}/{unique_key}"
     
     image_uri = sagemaker.image_uris.retrieve(
         framework="xgboost",
@@ -141,17 +158,20 @@ def get_pipeline(
         instance_count=training_instance_count,
         output_path=model_path,
         sagemaker_session=pipeline_session,
-        role=role
+        role=role,
+        tags=tags_dict
     )
 
     xgb.set_hyperparameters(
         objective="reg:squarederror",
-        num_round=10,
-        max_depth=6,
-        eta=0.3,
-        gamma=4,
-        min_child_weight=6,
-        subsample=0.9
+        num_round=num_round,
+        max_depth=max_depth,
+        eta=eta,
+        gamma=gamma,
+        min_child_weight=min_child_weight,
+        subsample=subsample,
+        colsample_bytree=colsample_bytree,
+        verbosity=0
     )
 
     step_args = xgb.fit(
@@ -164,8 +184,9 @@ def get_pipeline(
     )
 
     step_train = TrainingStep(
-        name="CarPriceML-Train",
-        step_args=step_args
+        name=f"{MODEL_TYPE.capitalize()}-CarPriceML-Train",
+        step_args=step_args,
+        cache_config=cache_config
     )
 
     # Create Model step
@@ -175,14 +196,15 @@ def get_pipeline(
         sagemaker_session=pipeline_session,
         role=role
     )
-
+    
     step_args = model.create(
-        instance_type="ml.m5.xlarge",
-        accelerator_type="ml.eia1.medium"
+        instance_type="ml.m5.large",
+        accelerator_type="ml.eia1.medium",
+        tags=tags_dict
     )
-
+    
     step_create_model = ModelStep(
-        name="CarPriceML",
+        name=f"{MODEL_TYPE.capitalize()}-CarPriceML",
         step_args=step_args
     )
     
@@ -193,27 +215,32 @@ def get_pipeline(
         instance_type=processing_instance_type,
         instance_count=processing_instance_count,
         sagemaker_session=pipeline_session,
-        role=role
+        role=role,
+        tags=tags_dict
     )
     
     step_args = script_eval.run(
         inputs=[
             ProcessingInput(
-                source=step_train.properties.ModelArtifacts.S3ModelArtifacts, destination="/opt/ml/processing/model"
+                source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
+                destination="/opt/ml/processing/model"
             ),
             ProcessingInput(
                 source=step_preprocess.properties.ProcessingOutputConfig.Outputs["test"].S3Output.S3Uri,
                 destination="/opt/ml/processing/test"
-            ),
+            )
         ],
         outputs=[
             ProcessingOutput(output_name="evaluation", source="/opt/ml/processing/evaluation")
         ],
-        code=os.path.join(BASE_DIR, "evaluate.py")
+        code=os.path.join(BASE_DIR, "evaluate.py"),
+        arguments=["--default-bucket", DEFAULT_BUCKET,
+                   "--model-type", MODEL_TYPE,
+                   "--prefix-evaluation", PREFIX_EVALUATION]
     )
     
     step_eval = ProcessingStep(
-        name="CarPriceML-Evaluate",
+        name=f"{MODEL_TYPE.capitalize()}-CarPriceML-Evaluate",
         step_args=step_args
     )
 
@@ -226,8 +253,14 @@ def get_pipeline(
             training_instance_type,
             training_instance_count,
             input_data_lelang,
-            input_data_crawling
-            
+            input_data_crawling,
+            max_depth,
+            subsample,
+            colsample_bytree,
+            num_round,
+            eta,
+            min_child_weight,
+            gamma
         ],
         steps=[step_preprocess, step_train, step_create_model, step_eval],
         sagemaker_session=pipeline_session,
